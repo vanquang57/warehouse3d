@@ -27,6 +27,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
 import * as d3 from 'd3'
 import layoutData from './warehouse-layout.json'
 import inventoryData from './warehouse-inventory.json'
+
 export default {
   name: 'DemoOne',
   data() {
@@ -45,36 +46,37 @@ export default {
       warehouseCenter: new THREE.Vector3(),
       animationFrameId: null,
       warehouseGroup: null,
-      slotsGroup: null,
+      instancesGroup: null,
       warehouseOffset: 0,
-      // Performance optimization variables
       lastRenderTime: 0,
       frameRate: 30,
       frameInterval: 1000 / 30,
       colorCache: {},
       materialCache: {},
       geometryCache: {},
+      instanceMeshes: {}, // Store our InstancedMesh objects
+      instanceData: [], // Store data for each instance
       areaConfigs: [
         {
           name: 'A',
-          color: 0xff9999,  // Màu đỏ nhạt
-          position: { x: 1100, z: 1950 }, // Vị trí trung tâm
-          size: { width: 3000, depth: 4500 }, // Kích thước
-          rotation: 0 // Góc xoay (radian)
+          color: 0xff9999,
+          position: { x: 1100, z: 1950 },
+          size: { width: 3000, depth: 4500 },
+          rotation: 0
         },
         {
           name: 'B',
-          color: 0x99ff99,  // Màu xanh lá nhạt
+          color: 0x99ff99,
           position: { x: 4200, z: 3100 },
           size: { width: 3000, depth: 2200 },
           rotation: 0
         },
         {
           name: 'Staging',
-          color: 0x9999ff,  // Màu xanh dương nhạt
+          color: 0x9999ff,
           position: { x: 4200, z: 800 },
           size: { width: 3000, depth: 2200 },
-          rotation: 0 // Xoay 45 độ
+          rotation: 0
         }
       ],
     }
@@ -94,7 +96,6 @@ export default {
     this.cleanUp()
   },
   methods: {
-    // Throttle function to limit how often a function can be called
     throttle(func, limit) {
       let lastFunc;
       let lastRan;
@@ -140,6 +141,10 @@ export default {
       this.warehouseGroup = new THREE.Group()
       this.scene.add(this.warehouseGroup)
 
+      // Create instances group
+      this.instancesGroup = new THREE.Group()
+      this.warehouseGroup.add(this.instancesGroup)
+
       // Create camera with optimized settings
       this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000)
       this.camera.position.set(0, 1500, 2000)
@@ -151,7 +156,7 @@ export default {
         powerPreference: "high-performance",
         logarithmicDepthBuffer: true
       })
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)) // Limit pixel ratio for performance
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
       this.renderer.setSize(window.innerWidth, window.innerHeight)
       this.$refs.container.appendChild(this.renderer.domElement)
 
@@ -175,30 +180,21 @@ export default {
       this.gridHelper.position.copy(this.warehouseCenter)
       this.scene.add(this.gridHelper)
 
-      // Thêm trục tọa độ
-      this.axesHelper = new THREE.AxesHelper(1000) // Kích thước 1000 đơn vị
+      // Add axes helper
+      this.axesHelper = new THREE.AxesHelper(1000)
       this.axesHelper.position.copy(this.warehouseCenter)
       this.scene.add(this.axesHelper)
-
-      // Tùy chỉnh màu sắc các trục nếu cần
       this.axesHelper.setColors(
-        new THREE.Color(0xff0000), // Trục X - Đỏ
-        new THREE.Color(0x00ff00), // Trục Y - Xanh lá
-        new THREE.Color(0x0000ff)  // Trục Z - Xanh dương
-      )
+        new THREE.Color(0xff0000),
+        new THREE.Color(0x00ff00),
+        new THREE.Color(0x0000ff))
     },
     
     createWarehouse(layoutData, inventoryData) {
-      // Clear existing slots efficiently
-      if (this.slotsGroup) {
-        this.warehouseGroup.remove(this.slotsGroup)
-        this.disposeGroup(this.slotsGroup)
-      }
-      this.slots = []
-      
-      // Create new slots group
-      this.slotsGroup = new THREE.Group()
-      this.slotsGroup.position.copy(this.warehouseOffset)
+      // Clear existing instances
+      this.instancesGroup.clear()
+      this.instanceMeshes = {}
+      this.instanceData = []
       
       // Prepare color scales
       const damagedColorScale = d3.scaleLinear()
@@ -217,121 +213,126 @@ export default {
         inventoryLookup.set(item.LOCATION, item)
       })
       
-
+      // Group slots by dimensions for instancing
+      const slotsByDimensions = {}
       
-      const edgeMaterial = new THREE.LineBasicMaterial({ 
-        color: 0x000000,
-        linewidth: 1
-      })
-      
-      // Create geometry cache to reuse geometries of the same dimensions
-      const getGeometry = (width, height, depth) => {
-        const key = `${width}_${height}_${depth}`
-        if (!this.geometryCache[key]) {
-          this.geometryCache[key] = new THREE.BoxGeometry(width, height, depth)
-        }
-        return this.geometryCache[key]
-      }
-      
-      // Create material cache to reuse materials of the same color
-      const getMaterial = (color) => {
-        const colorKey = color ? color.getHex() : 'default'
-        if (!this.materialCache[colorKey]) {
-          this.materialCache[colorKey] = new THREE.MeshPhongMaterial({
-            color: color || 0xeeeeee,
-            transparent: true,
-            opacity: 0.9
-          })
-        }
-        return this.materialCache[colorKey]
-      }
-      
-      // Create each slot with optimized geometry and material reuse
-      layoutData.forEach(slotData => {
+      layoutData.forEach((slotData, index) => {
         const width = +slotData.WIDTH
         const depth = +slotData.DEPTH
         const height = +slotData.HEIGHT
-        const x = +slotData.X
-        const y = +slotData.Z
-        const z = +slotData.Y
+        const key = `${width}_${height}_${depth}`
         
-        // Get inventory data
-        const inventory = inventoryLookup.get(slotData.LOCATION)
-        let color = null
-        
-        if (inventory) {
-          // Apply color based on selection
-          if (this.colorBy === 'cases_damaged' && inventory["CASES DAMAGED"]) {
-            const damageValue = +inventory["CASES DAMAGED"]
-            const colorKey = `damage_${damageValue}`
-            if (!this.colorCache[colorKey]) {
-              this.colorCache[colorKey] = new THREE.Color(damagedColorScale(damageValue))
-            }
-            color = this.colorCache[colorKey]
-          } else if (this.colorBy === 'weekly_mvmt' && inventory["WEEKLY MVMT"]) {
-            const mvmtValue = +inventory["WEEKLY MVMT"]
-            const colorKey = `mvmt_${mvmtValue}`
-            if (!this.colorCache[colorKey]) {
-              this.colorCache[colorKey] = new THREE.Color(movementColorScale(mvmtValue))
-            }
-            color = this.colorCache[colorKey]
-          } else if (this.colorBy === 'item_cost' && inventory["ITEM COST"]) {
-            const costValue = +inventory["ITEM COST"]
-            const colorKey = `cost_${costValue}`
-            if (!this.colorCache[colorKey]) {
-              this.colorCache[colorKey] = new THREE.Color(costColorScale(costValue))
-            }
-            color = this.colorCache[colorKey]
-          } else if (inventory["COLOR_CASES DAMAGED"]) {
-            color = new THREE.Color(inventory["COLOR_CASES DAMAGED"])
+        if (!slotsByDimensions[key]) {
+          slotsByDimensions[key] = {
+            width,
+            height,
+            depth,
+            slots: []
           }
         }
         
-        // Create mesh with cached geometry and material
-        const geometry = getGeometry(width, height, depth)
-        const material = getMaterial(color)
-        const mesh = new THREE.Mesh(geometry, material)
-        mesh.position.set(x, y + height/2, z)
-        mesh.userData = {
-          location: slotData.LOCATION,
-          inventory: inventory
-        }
-        
-        // Add edges (only if we're not dealing with too many objects)
-        if (layoutData.length < 5000) {
-          const edges = new THREE.LineSegments(
-            new THREE.EdgesGeometry(geometry),
-            edgeMaterial
-          )
-          edges.position.copy(mesh.position)
-          this.slotsGroup.add(edges)
-        }
-        
-        // Add to slots group
-        this.slotsGroup.add(mesh)
-        
-        this.slots.push({
-          mesh: mesh,
-          data: slotData,
-          inventory: inventory
+        slotsByDimensions[key].slots.push({
+          slotData,
+          index
         })
       })
       
-      // Add slots group to warehouse group
-      this.warehouseGroup.add(this.slotsGroup)
+      // Create an InstancedMesh for each unique dimension group
+      Object.keys(slotsByDimensions).forEach(key => {
+        const group = slotsByDimensions[key]
+        const count = group.slots.length
+        
+        // Create geometry if not cached
+        if (!this.geometryCache[key]) {
+          this.geometryCache[key] = new THREE.BoxGeometry(group.width, group.height, group.depth)
+        }
+        
+        // Create material
+        const material = new THREE.MeshPhongMaterial({
+          color: 0xeeeeee,
+          transparent: true,
+          opacity: 0.9
+        })
+        
+        // Create instanced mesh
+        const instancedMesh = new THREE.InstancedMesh(this.geometryCache[key], material, count)
+        instancedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+        instancedMesh.count = count
+        instancedMesh.userData.key = key
+        
+        // Store reference
+        this.instanceMeshes[key] = instancedMesh
+        this.instancesGroup.add(instancedMesh)
+        
+        // Create dummy object for raycasting
+        const dummy = new THREE.Object3D()
+        
+        // Process each slot in this group
+        group.slots.forEach((slot, instanceId) => {
+          const slotData = slot.slotData
+          const x = +slotData.X
+          const y = +slotData.Z
+          const z = +slotData.Y
+          
+          // Set position and rotation
+          dummy.position.set(x, y + group.height/2, z)
+          dummy.updateMatrix()
+          
+          // Apply the matrix to the instance
+          instancedMesh.setMatrixAt(instanceId, dummy.matrix)
+          
+          // Get inventory data
+          const inventory = inventoryLookup.get(slotData.LOCATION)
+          let color = new THREE.Color(0xeeeeee)
+          
+          if (inventory) {
+            // Apply color based on selection
+            if (this.colorBy === 'cases_damaged' && inventory["CASES DAMAGED"]) {
+              const damageValue = +inventory["CASES DAMAGED"]
+              color = new THREE.Color(damagedColorScale(damageValue))
+            } else if (this.colorBy === 'weekly_mvmt' && inventory["WEEKLY MVMT"]) {
+              const mvmtValue = +inventory["WEEKLY MVMT"]
+              color = new THREE.Color(movementColorScale(mvmtValue))
+            } else if (this.colorBy === 'item_cost' && inventory["ITEM COST"]) {
+              const costValue = +inventory["ITEM COST"]
+              color = new THREE.Color(costColorScale(costValue))
+            } else if (inventory["COLOR_CASES DAMAGED"]) {
+              color = new THREE.Color(inventory["COLOR_CASES DAMAGED"])
+            }
+          }
+          
+          // Set color for this instance
+          instancedMesh.setColorAt(instanceId, color)
+          
+          // Store instance data for raycasting and tooltips
+          this.instanceData.push({
+            instanceId,
+            instancedMesh,
+            location: slotData.LOCATION,
+            inventory,
+            position: new THREE.Vector3(x, y + group.height/2, z)
+          })
+        })
+        
+        // Update the instance
+        instancedMesh.instanceMatrix.needsUpdate = true
+        if (instancedMesh.instanceColor) {
+          instancedMesh.instanceColor.needsUpdate = true
+        }
+      })
       
       // Position warehouse group at center
+      this.instancesGroup.position.copy(this.warehouseOffset)
       this.warehouseGroup.position.copy(this.warehouseCenter)
 
       // Create floor planes for each AREA
       this.createAreaFloors(layoutData)
       
-      // Thêm tường bao quanh nhà kho
+      // Create combined walls
       this.createCombinedAreaWalls()
     },
 
     createCombinedAreaWalls() {
-      // Xóa tường cũ nếu có
       if (this.combinedWalls) {
         this.combinedWalls.forEach(wall => {
           this.warehouseGroup.remove(wall)
@@ -341,7 +342,6 @@ export default {
       }
       this.combinedWalls = []
 
-      // Tính toán bounding box bao quanh cả 3 khu vực
       const areaPositions = this.areaConfigs.map(area => {
         return [
           new THREE.Vector3(
@@ -361,21 +361,18 @@ export default {
       const size = new THREE.Vector3()
       boundingBox.getSize(size)
 
-      // Vật liệu tường trong suốt
       const wallMaterial = new THREE.MeshStandardMaterial({
         color: 0xdddddd,
         transparent: true,
         opacity: 0.1,
         side: THREE.DoubleSide,
-        
       })
 
       const wallThickness = 50
       const wallHeight = 100
 
-      // Tạo 4 bức tường bao quanh
       const wallsConfig = [
-        { // Tường trái (X min)
+        {
           position: [
             boundingBox.min.x - wallThickness/2,
             wallHeight/2,
@@ -383,7 +380,7 @@ export default {
           ],
           size: [wallThickness, wallHeight, size.z + wallThickness*2]
         },
-        { // Tường phải (X max)
+        {
           position: [
             boundingBox.max.x + wallThickness/2,
             wallHeight/2,
@@ -391,7 +388,7 @@ export default {
           ],
           size: [wallThickness, wallHeight, size.z + wallThickness*2]
         },
-        { // Tường trước (Z min)
+        {
           position: [
             boundingBox.min.x + size.x/2,
             wallHeight/2,
@@ -399,7 +396,7 @@ export default {
           ],
           size: [size.x + wallThickness*2, wallHeight, wallThickness]
         },
-        { // Tường sau (Z max)
+        {
           position: [
             boundingBox.min.x + size.x/2,
             wallHeight/2,
@@ -422,11 +419,9 @@ export default {
         this.warehouseGroup.add(wallMesh)
         this.combinedWalls.push(wallMesh)
       })
-
     },
 
     createAreaFloors() {
-      // Xóa các sàn cũ nếu có
       if (this.floorPlanes) {
         this.floorPlanes.forEach(plane => {
           this.warehouseGroup.remove(plane)
@@ -436,12 +431,10 @@ export default {
       }
       this.floorPlanes = [];
 
-      // Tính toán sức chứa các khu vực
       const inventoryLookup = new Map()
       inventoryData.forEach(item => inventoryLookup.set(item.LOCATION, item));
       const areaCapacity = this.calculateAreaCapacity(layoutData, inventoryLookup);
 
-      // Tạo sàn cho từng khu vực theo cấu hình
       this.areaConfigs.forEach(area => {
         const geometry = new THREE.PlaneGeometry(area.size.width, area.size.depth)
         const material = new THREE.MeshStandardMaterial({
@@ -454,20 +447,18 @@ export default {
         })
 
         const floor = new THREE.Mesh(geometry, material)
-        floor.rotation.x = -Math.PI / 2 // Xoay nằm ngang
-        floor.rotation.z = area.rotation // Xoay theo cấu hình
+        floor.rotation.x = -Math.PI / 2
+        floor.rotation.z = area.rotation
         floor.position.set(
           area.position.x,
-          -5, // Đặt thấp hơn các khe chứa
+          -5,
           area.position.z
         )
         
-        // Áp dụng offset của kho
         floor.position.add(this.warehouseOffset)
         this.warehouseGroup.add(floor)
         this.floorPlanes.push(floor)
 
-        // Thêm nhãn với thông tin sức chứa
         this.addAreaLabel(area, floor.position, areaCapacity[area.name])
       })
     },
@@ -478,14 +469,11 @@ export default {
       canvas.height = 120
       const context = canvas.getContext('2d')
       
-      // Clear canvas với nền trong suốt
       context.clearRect(0, 0, canvas.width, canvas.height)
       
-      // Tính phần trăm sức chứa
       const usagePercent = capacity ? Math.round((capacity.usedSlots / capacity.totalSlots) * 100) : 0
       const usageText = `${usagePercent}% (${capacity.usedSlots}/${capacity.totalSlots})`
       
-      // Vẽ text với viền trắng (stroke)
       context.font = 'Bold 46px Arial'
       context.textAlign = 'center'
       
@@ -495,26 +483,21 @@ export default {
       context.fillStyle = '#ffffff'
       context.fillText(`Area ${area.name}`, canvas.width/2, 35)
       
-      // Phần trăm sức chứa với viền trắng
       context.font = '36px Arial'
       context.strokeText(usageText, canvas.width/2, 70)
       context.fillText(usageText, canvas.width/2, 70)
       
-      // Thanh tiến trình
       const barWidth = 300
       const barHeight = 20
       const barX = (canvas.width - barWidth) / 2
       const barY = 80
       
-      // Nền thanh
       context.fillStyle = '#eeeeee'
       context.fillRect(barX, barY, barWidth, barHeight)
       
-      // Phần đã sử dụng
       context.fillStyle = `#${area.color.toString(16).padStart(6, '0')}`
       context.fillRect(barX, barY, barWidth * (usagePercent / 100), barHeight)
       
-      // Viền thanh
       context.strokeStyle = '#000000'
       context.lineWidth = 1
       context.strokeRect(barX, barY, barWidth, barHeight)
@@ -536,8 +519,7 @@ export default {
     },
     
     updateVisualization() {
-      // Clear color cache when visualization changes
-      this.colorCache = {}
+      // Recreate warehouse with new coloring
       this.createWarehouse(layoutData, inventoryData)
     },
     
@@ -566,22 +548,27 @@ export default {
       
       this.raycaster.setFromCamera(this.mouse, this.camera)
       
-      const intersects = this.raycaster.intersectObjects(
-        this.slots.map(slot => slot.mesh),
-        false // Don't check recursively for better performance
-      )
+      // Find intersected instances
+      const intersects = this.raycaster.intersectObjects(this.instancesGroup.children)
       
       const tooltip = this.$refs.tooltip
       if (intersects.length > 0) {
-        const object = intersects[0].object
+        const intersect = intersects[0]
+        const instancedMesh = intersect.object
+        const instanceId = intersect.instanceId
         
-        if (this.intersectedObject !== object) {
-          this.intersectedObject = object
+        // Find the instance data
+        const instanceInfo = this.instanceData.find(data => 
+          data.instancedMesh === instancedMesh && data.instanceId === instanceId
+        )
+        
+        if (instanceInfo && this.intersectedObject !== instanceInfo) {
+          this.intersectedObject = instanceInfo
           
-          if (object.userData.inventory) {
-            const inv = object.userData.inventory
+          if (instanceInfo.inventory) {
+            const inv = instanceInfo.inventory
             tooltip.innerHTML = `
-              <strong>${object.userData.location}</strong><br>
+              <strong>${instanceInfo.location}</strong><br>
               Item: ${inv["ITEM DESCRIPTION"]}<br>
               Cases Damaged: ${inv["CASES DAMAGED"]}<br>
               Weekly Movement: ${inv["WEEKLY MVMT"]}<br>
@@ -589,7 +576,7 @@ export default {
             `
           } else {
             tooltip.innerHTML = `
-              <strong>${object.userData.location}</strong><br>
+              <strong>${instanceInfo.location}</strong><br>
               Empty slot
             `
           }
@@ -615,7 +602,6 @@ export default {
     animate() {
       this.animationFrameId = requestAnimationFrame(this.animate)
       
-      // Implement frame rate limiting
       const now = performance.now()
       const delta = now - this.lastRenderTime
       
@@ -624,21 +610,6 @@ export default {
         this.renderer.render(this.scene, this.camera)
         this.lastRenderTime = now - (delta % this.frameInterval)
       }
-    },
-    
-    disposeGroup(group) {
-      if (!group) return
-      
-      group.traverse(child => {
-        if (child.geometry) child.geometry.dispose()
-        if (child.material) {
-          if (Array.isArray(child.material)) {
-            child.material.forEach(mat => mat.dispose())
-          } else {
-            child.material.dispose()
-          }
-        }
-      })
     },
     
     cleanUp() {
@@ -650,8 +621,10 @@ export default {
       }
       
       // Dispose of all Three.js objects
-      this.disposeGroup(this.slotsGroup)
-      this.disposeGroup(this.warehouseGroup)
+      Object.values(this.instanceMeshes).forEach(mesh => {
+        this.instancesGroup.remove(mesh)
+        mesh.dispose()
+      })
       
       if (this.gridHelper) {
         this.scene.remove(this.gridHelper)
@@ -662,12 +635,6 @@ export default {
         this.renderer.dispose()
       }
       
-      // Clear caches
-      this.colorCache = {}
-      this.materialCache = {}
-      this.geometryCache = {}
-
-      // Xóa trục tọa độ khi dọn dẹp
       if (this.axesHelper) {
         this.scene.remove(this.axesHelper)
         this.axesHelper.dispose()
@@ -680,10 +647,14 @@ export default {
           wall.material.dispose()
         })
       }
+      
+      // Clear caches
+      this.colorCache = {}
+      this.materialCache = {}
+      this.geometryCache = {}
     },
 
     calculateAreaCapacity(layoutData, inventoryLookup) {
-      // Tính toán sức chứa từng khu vực
       const areaStats = {}
       layoutData.forEach(slot => {
         if (!areaStats[slot.AREA]) {
@@ -699,7 +670,6 @@ export default {
       })
       return areaStats
     }
-
   }
 }
 </script>
