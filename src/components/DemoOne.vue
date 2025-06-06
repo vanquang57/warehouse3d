@@ -36,7 +36,7 @@ export default {
       camera: null,
       renderer: null,
       controls: null,
-      slots: [],
+      slots: layoutData,
       colorBy: 'none',
       showGrid: true,
       gridHelper: null,
@@ -79,6 +79,11 @@ export default {
           rotation: 0
         }
       ],
+      gridSize: 48,
+      walkableGrid: {},
+      startPoint: null,
+      endPoint: null,
+      clickMarkerMaterial: new THREE.MeshBasicMaterial({ color: 0x00ff00 }),
     }
   },
   destroyed() {
@@ -90,7 +95,8 @@ export default {
     this.createWarehouse(layoutData, inventoryData)
     this.animate()
     window.addEventListener('resize', this.throttle(this.onWindowResize, 100))
-    this.$refs.container.addEventListener('mousemove', this.throttle(this.onMouseMove, 50))
+    this.$refs.container.addEventListener('mousemove', this.throttle(this.onMouseMove, 50));
+    this.testPathfinding();
   },
   beforeDestroy() {
     this.cleanUp()
@@ -120,16 +126,10 @@ export default {
     calculateWarehouseCenter(layoutData) {
       const positions = layoutData.map(slot => new THREE.Vector3(+slot.X, +slot.Z, +slot.Y))
       const boundingBox = new THREE.Box3().setFromPoints(positions)
-      
       const size = new THREE.Vector3()
       boundingBox.getSize(size)
-      this.warehouseOffset = new THREE.Vector3(
-        -boundingBox.min.x - size.x/2,
-        -boundingBox.min.y,
-        -boundingBox.min.z - size.z/2
-      )
-      
-      this.warehouseCenter = new THREE.Vector3(0, size.y/2, 0)
+      this.warehouseOffset = new THREE.Vector3(0,0,0)
+      this.warehouseCenter = new THREE.Vector3(0,0, 0)
     },
     
     initThreeJS() {
@@ -654,6 +654,170 @@ export default {
       this.geometryCache = {}
     },
 
+    buildWalkableGrid(buffer = 10) {
+      const blocked = new Set();
+      for (const slot of this.slots) {
+        const x0 = slot.X - slot.WIDTH / 2 - buffer;
+        const x1 = slot.X + slot.WIDTH / 2 + buffer;
+        const y0 = slot.Y - slot.DEPTH / 2 - buffer;
+        const y1 = slot.Y + slot.DEPTH / 2 + buffer;
+
+        const gx0 = Math.floor(x0 / this.gridSize);
+        const gx1 = Math.floor(x1 / this.gridSize);
+        const gy0 = Math.floor(y0 / this.gridSize);
+        const gy1 = Math.floor(y1 / this.gridSize);
+
+        for (let gx = gx0; gx <= gx1; gx++) {
+          for (let gy = gy0; gy <= gy1; gy++) {
+            blocked.add(`${gx},${gy}`);
+          }
+        }
+      }
+
+      this.walkableGrid = {};
+      const xs = this.slots.map(s => s.X);
+      const ys = this.slots.map(s => s.Y);
+      const maxGx = Math.ceil(Math.max(...xs) / this.gridSize);
+      const maxGy = Math.ceil(Math.max(...ys) / this.gridSize);
+
+      for (let gx = 0; gx <= maxGx; gx++) {
+        for (let gy = 0; gy <= maxGy; gy++) {
+          const key = `${gx},${gy}`;
+          this.walkableGrid[key] = !blocked.has(key);
+        }
+      }
+    },
+
+    findPathDijkstra(start, end) {
+      const queue = [{ pos: start, dist: 0, path: [start] }];
+      const visited = new Set();
+      const key = ({ x, y }) => `${x},${y}`;
+
+      while (queue.length > 0) {
+        queue.sort((a, b) => a.dist - b.dist);
+        const { pos, dist, path } = queue.shift();
+        const k = key(pos);
+        if (visited.has(k)) continue;
+        visited.add(k);
+        if (k === key(end)) return path;
+
+        const directions = [
+          { x: 1, y: 0 }, { x: -1, y: 0 },
+          { x: 0, y: 1 }, { x: 0, y: -1 }
+        ];
+
+        for (const dir of directions) {
+          const nx = pos.x + dir.x;
+          const ny = pos.y + dir.y;
+          const nkey = `${nx},${ny}`;
+          if (this.walkableGrid[nkey] && !visited.has(nkey)) {
+            queue.push({ pos: { x: nx, y: ny }, dist: dist + 1, path: [...path, { x: nx, y: ny }] });
+          }
+        }
+      }
+      return null;
+    },
+
+    gridToWorld({ x, y }) {
+      return new THREE.Vector3(x * this.gridSize, 0, y * this.gridSize);
+    },
+
+    worldToGrid(vector) {
+      return {
+        x: Math.floor(vector.x / this.gridSize),
+        y: Math.floor(vector.z / this.gridSize)
+      };
+    },
+
+    drawPath(path) {
+      const points = path.map(p => this.gridToWorld(p));
+      const geometry = new THREE.BufferGeometry().setFromPoints(points);
+      const material = new THREE.LineBasicMaterial({ color: 0xff0000 });
+      const line = new THREE.Line(geometry, material);
+      this.scene.add(line);
+    },
+
+    addClickMarker(pos) {
+      const geometry = new THREE.SphereGeometry(10, 8, 8);
+      const mesh = new THREE.Mesh(geometry, this.clickMarkerMaterial);
+      mesh.position.copy(this.gridToWorld(pos));
+      this.scene.add(mesh);
+    },
+
+    onSceneClick(event) {
+      const rect = this.$refs.container.getBoundingClientRect();
+      const mouse = new THREE.Vector2(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      this.raycaster.setFromCamera(mouse, this.camera);
+
+
+      const intersects = this.raycaster.intersectObjects([this.walkableGridMesh, this.groundPlane]);
+      if (intersects.length > 0) {
+        const point = intersects[0].point;
+        const gridPos = this.worldToGrid(point);
+        const key = `${gridPos.x},${gridPos.y}`;
+        
+        if (!this.walkableGrid[key]) return;
+
+        this.addClickMarker(gridPos);
+
+        if (!this.startPoint) {
+          this.startPoint = gridPos;
+        } else if (!this.endPoint) {
+          this.endPoint = gridPos;
+          const path = this.findPathDijkstra(this.startPoint, this.endPoint);
+          if (path) this.drawPath(path);
+        } else {
+          this.startPoint = gridPos;
+          this.endPoint = null;
+        }
+      }
+    },
+
+    setupClickListener() {
+      this.groundPlane = new THREE.Mesh(
+        new THREE.PlaneGeometry(10000, 10000),
+        new THREE.MeshBasicMaterial({ visible: false })
+      );
+      this.groundPlane.rotation.x = -Math.PI / 2;
+      this.scene.add(this.groundPlane);
+      this.$refs.container.addEventListener('click', this.onSceneClick);
+    },
+
+    testPathfinding() {
+      this.buildWalkableGrid();
+      this.visualizeWalkableGrid();
+      this.setupClickListener();
+    },
+
+visualizeWalkableGrid() {
+  const geometry = new THREE.PlaneGeometry(this.gridSize, this.gridSize);
+  const material = new THREE.MeshBasicMaterial({
+    color: 0x00ffcc,
+    opacity: 0.4,
+    transparent: true
+  });
+
+  const keys = Object.keys(this.walkableGrid).filter(key => this.walkableGrid[key]);
+  const count = keys.length;
+  const instancedMesh = new THREE.InstancedMesh(geometry, material, count);
+  this.walkableGridMesh = instancedMesh; // <-- đặt dòng này ở đây
+
+  const dummy = new THREE.Object3D();
+  let index = 0;
+  for (const key of keys) {
+    const [gx, gy] = key.split(',').map(Number);
+    dummy.position.set(gx * this.gridSize, 0.1, gy * this.gridSize); // 0.1 tránh z-fighting
+    dummy.rotation.set(-Math.PI / 2, 0, 0);
+    dummy.updateMatrix();
+    instancedMesh.setMatrixAt(index++, dummy.matrix);
+  }
+
+  this.scene.add(instancedMesh);
+}
+,
     calculateAreaCapacity(layoutData, inventoryLookup) {
       const areaStats = {}
       layoutData.forEach(slot => {
@@ -669,7 +833,19 @@ export default {
         }
       })
       return areaStats
+    },
+
+    getSlotByPosition(worldPos) {
+      return this.instanceData.find(slot => {
+        const pos = slot.position;
+        const half = this.gridSize / 2;
+        return (
+          worldPos.x >= pos.x - half && worldPos.x <= pos.x + half &&
+          worldPos.z >= pos.z - half && worldPos.z <= pos.z + half
+        );
+      });
     }
+
   }
 }
 </script>

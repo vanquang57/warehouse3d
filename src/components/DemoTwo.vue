@@ -29,7 +29,7 @@
               />
             </td>
             <td>{{ item.LOCATION }}</td>
-            <td>{{ item['ITEM NO'] }}</td>
+            <td>{{ item['\\sITEM NO'] }}</td>
             <td>{{ item['ITEM DESCRIPTION'] }}</td>
             <td>{{ item['COLOR_CASES DAMAGED'] }}</td>
           </tr>
