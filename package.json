@@ -3,14 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "serve": "vue-cli-service serve",
-    "build": "vue-cli-service build",
+    "serve": "vue-cli-service serve --skip-plugins @vue/cli-plugin-eslint",
+    "build": "vue-cli-service build --skip-plugins @vue/cli-plugin-eslint",
     "lint": "vue-cli-service lint"
   },
   "dependencies": {
     "@tweenjs/tween.js": "^25.0.0",
     "core-js": "^3.8.3",
     "d3": "^7.9.0",
+    "lodash-es": "^4.17.21",
     "stats.js": "^0.17.0",
     "three": "^0.175.0",
     "three-spritetext": "^1.9.6",
@@ -35,8 +36,7 @@
       "node": true
     },
     "extends": [
-      "plugin:vue/essential",
-      "eslint:recommended"
+      "plugin:vue/essential"
     ],
     "parserOptions": {
       "parser": "@babel/eslint-parser"
