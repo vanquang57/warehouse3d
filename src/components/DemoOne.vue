@@ -35,6 +35,10 @@
 <script>
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
+import { Line2 } from 'three/examples/jsm/lines/Line2.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
+
 import * as d3 from 'd3'
 import layoutData from './warehouse-layout.json'
 import inventoryData from './warehouse-inventory.json'
@@ -88,6 +92,7 @@ export default {
     window.addEventListener('resize', this.throttle(this.onWindowResize, 100))
     this.$refs.container.addEventListener('mousemove', this.throttle(this.onMouseMove, 50));
     this.testPathfinding();
+    this.renderer.autoClear = false;
   },
   beforeDestroy() {
     this.cleanUp()
@@ -549,13 +554,26 @@ export default {
       };
     },
 
-    drawPath(path) {
-      const points = path.map(p => this.gridToWorld(p));
-      const geometry = new THREE.BufferGeometry().setFromPoints(points);
-      const material = new THREE.LineBasicMaterial({ color: 0xff0000 });
-      const line = new THREE.Line(geometry, material);
-      this.scene.add(line);
-    },
+drawPath(path) {
+  const positions = path.flatMap(p => {
+    const v = this.gridToWorld(p);
+    return [v.x, v.y, v.z];
+  });
+  const geometry = new LineGeometry();
+  geometry.setPositions(positions);
+  const material = new LineMaterial({
+    color: 0xff0000,
+    linewidth: 5, // đơn vị: pixel (trên màn hình)
+    worldUnits: false, // nếu muốn dùng đơn vị thực thì set true
+    dashed: false
+  });
+
+  const line = new Line2(geometry, material);
+  line.computeLineDistances();
+  line.scale.set(1, 1, 1);
+  this.scene.add(line);
+}
+,
 
     addClickMarker(pos) {
       const geometry = new THREE.SphereGeometry(10, 8, 8);
@@ -664,7 +682,6 @@ export default {
       this.scene.add(instancedMesh);
     },
     visualizeWalkableGridBorder() {
-      const size = 200;
       const half = this.gridSize / 2;
       const y = 0.5; // nâng lưới lên khỏi sàn
 
@@ -674,7 +691,7 @@ export default {
       const ys = this.slots.map(s => s.Y);
       const maxX = Math.ceil(Math.max(...xs)) / this.gridSize;
       const maxY = Math.ceil(Math.max(...ys)) / this.gridSize;
-      debugger
+      
       for (let gx = 0; gx < maxX; gx++) {
         for (let gy = 0; gy < maxY; gy++) {
           const x = gx * this.gridSize;
@@ -693,7 +710,7 @@ export default {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
 
-      const material = new THREE.LineBasicMaterial({ color: 0x333333 });
+      const material = new THREE.LineBasicMaterial({ color: 0xbcbcbc });
       const gridLines = new THREE.LineSegments(geometry, material);
       this.scene.add(gridLines);
     }
