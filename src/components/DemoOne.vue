@@ -2,15 +2,7 @@
   <div id="demoOne">
     <div class="controls">
       <h2>Warehouse Visualization</h2>
-      <div>
-        <label>Color by: </label>
-        <select v-model="colorBy" @change="updateVisualization">
-          <option value="none">None</option>
-          <option value="cases_damaged">Cases Damaged</option>
-          <option value="weekly_mvmt">Weekly Movement</option>
-          <option value="item_cost">Item Cost</option>
-        </select>
-      </div>
+
       <div>
         <button @click="resetCamera">Reset View</button>
         <button @click="toggleGrid">{{ showGrid ? 'Hide Grid' : 'Show Grid' }}</button>
@@ -35,11 +27,7 @@
 <script>
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
-import { Line2 } from 'three/examples/jsm/lines/Line2.js';
-import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 
-import * as d3 from 'd3'
 import layoutData from './warehouse-layout.json'
 import inventoryData from './warehouse-inventory.json'
 
@@ -71,7 +59,7 @@ export default {
       geometryCache: {},
       instanceMeshes: {}, // Store our InstancedMesh objects
       instanceData: [], // Store data for each instance
-      gridSize: 24,
+      gridSize: 48,
       walkableGrid: {},
       startPoint: null,
       endPoint: null,
@@ -192,17 +180,6 @@ export default {
       this.instanceMeshes = {}
       this.instanceData = []
 
-      // Prepare color scales
-      const damagedColorScale = d3.scaleLinear()
-        .domain([0, 8])
-        .range(["#00ff00", "#ff0000"])
-
-      const movementColorScale = d3.scaleSequential(d3.interpolateRdYlGn)
-        .domain(d3.extent(inventoryData, d => +d["WEEKLY MVMT"]))
-
-      const costColorScale = d3.scaleSequential(d3.interpolateBlues)
-        .domain(d3.extent(inventoryData, d => +d["ITEM COST"]))
-
       // Create inventory lookup map for faster access
       const inventoryLookup = new Map()
       inventoryData.forEach(item => {
@@ -282,19 +259,7 @@ export default {
           let color = new THREE.Color(0xeeeeee)
 
           if (inventory) {
-            // Apply color based on selection
-            if (this.colorBy === 'cases_damaged' && inventory["CASES DAMAGED"]) {
-              const damageValue = +inventory["CASES DAMAGED"]
-              color = new THREE.Color(damagedColorScale(damageValue))
-            } else if (this.colorBy === 'weekly_mvmt' && inventory["WEEKLY MVMT"]) {
-              const mvmtValue = +inventory["WEEKLY MVMT"]
-              color = new THREE.Color(movementColorScale(mvmtValue))
-            } else if (this.colorBy === 'item_cost' && inventory["ITEM COST"]) {
-              const costValue = +inventory["ITEM COST"]
-              color = new THREE.Color(costColorScale(costValue))
-            } else if (inventory["COLOR_CASES DAMAGED"]) {
               color = new THREE.Color(inventory["COLOR_CASES DAMAGED"])
-            }
           }
 
           // Set color for this instance
@@ -320,11 +285,6 @@ export default {
       // Position warehouse group at center
       this.instancesGroup.position.copy(this.warehouseOffset)
       this.warehouseGroup.position.copy(this.warehouseCenter)
-    },
-
-    updateVisualization() {
-      // Recreate warehouse with new coloring
-      this.createWarehouse(layoutData, inventoryData)
     },
 
     resetCamera() {
@@ -553,28 +513,28 @@ export default {
         y: Math.floor(vector.z / this.gridSize),
       };
     },
+    drawPath(path) {
+      const geometry = new THREE.PlaneGeometry(this.gridSize, this.gridSize);
+      const material = new THREE.MeshBasicMaterial({
+        color: 0x0000ff,
+        opacity: 0.6,
+        transparent: true,
+        side: THREE.DoubleSide
+      });
 
-drawPath(path) {
-  const positions = path.flatMap(p => {
-    const v = this.gridToWorld(p);
-    return [v.x, v.y, v.z];
-  });
-  const geometry = new LineGeometry();
-  geometry.setPositions(positions);
-  const material = new LineMaterial({
-    color: 0xff0000,
-    linewidth: 5, // đơn vị: pixel (trên màn hình)
-    worldUnits: false, // nếu muốn dùng đơn vị thực thì set true
-    dashed: false
-  });
+      const dummy = new THREE.Object3D();
+      const highlightMesh = new THREE.InstancedMesh(geometry, material, path.length);
+      highlightMesh.name = 'pathHighlight';
 
-  const line = new Line2(geometry, material);
-  line.computeLineDistances();
-  line.scale.set(1, 1, 1);
-  this.scene.add(line);
-}
-,
-
+      for (let i = 0; i < path.length; i++) {
+        const { x, y } = path[i];
+        dummy.position.set(x * this.gridSize, 0.2, y * this.gridSize); // nâng lên khỏi sàn 1 chút
+        dummy.rotation.set(-Math.PI / 2, 0, 0);
+        dummy.updateMatrix();
+        highlightMesh.setMatrixAt(i, dummy.matrix);
+      }
+      this.scene.add(highlightMesh);
+    },
     addClickMarker(pos) {
       const geometry = new THREE.SphereGeometry(10, 8, 8);
       const mesh = new THREE.Mesh(geometry, this.clickMarkerMaterial);
