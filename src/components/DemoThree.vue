@@ -52,7 +52,7 @@ export default {
 
       // Renderer
       this.renderer = new THREE.WebGLRenderer({
-        antialias: false,
+        antialias: true,
         logarithmicDepthBuffer: false,
       })
       
