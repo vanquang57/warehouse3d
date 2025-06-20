@@ -5,12 +5,14 @@
 <script>
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
+import Stats from 'stats.js';
 
 export default {
   name: 'DemoThree',
   data() {
     return {
       scene: null,
+      stats: null,
       camera: null,
       renderer: null,
       controls: null,
@@ -52,7 +54,7 @@ export default {
 
       // Renderer
       this.renderer = new THREE.WebGLRenderer({
-        antialias: true,
+        antialias: false,
         logarithmicDepthBuffer: false,
       })
       
@@ -73,6 +75,11 @@ export default {
       const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
       directionalLight.position.set(1, 1, 1).normalize();
       this.scene.add(directionalLight);
+
+      this.stats = new Stats();
+      this.stats.showPanel(0); // 0: FPS, 1: MS, 2: MB
+      document.body.appendChild(this.stats.dom);
+
     },
     
     createGeometries() {
@@ -176,10 +183,12 @@ export default {
     },
     
     animate() {
+       this.stats.begin();
       this.frameId = requestAnimationFrame(this.animate);
       this.updateLOD();
       this.controls.update();
       this.renderer.render(this.scene, this.camera);
+       this.stats.end();
     },
     
     handleResize() {
