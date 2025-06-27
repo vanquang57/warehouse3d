@@ -1,237 +1,238 @@
 <template>
-  <div ref="container" class="grid-container"></div>
+  <canvas ref="canvas"></canvas>
 </template>
 
 <script>
-import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
-import Stats from 'stats.js';
-
 export default {
-  name: 'DemoThree',
+  name: 'WarehouseCanvasLOD',
+  props: {
+    layout: Array,
+    path: Array,
+    listItem: Array,
+    warehouseX: Number,
+    warehouseY: Number
+  },
   data() {
     return {
-      scene: null,
-      stats: null,
-      camera: null,
-      renderer: null,
-      controls: null,
-      gridSize: { x:  500, y: 500, z: 3 }, // Giảm kích thước để demo (đổi lại 500x500x3 khi triển khai thực tế)
-      cellSize: 50,
-      instances: [],
-      currentLOD: 'low',
-      frameId: null
+      gridSize: 50,
+      offsetX: 0,
+      offsetY: 0,
+      scale: 1,
+      isDragging: false,
+      startX: 0,
+      startY: 0,
+      ctx: null,
+      miniMapImage: null,
+      layoutCells: new Set(),
+      pathCells: new Set(),
+      itemCells: new Map(),
     };
   },
-  computed: {
-    totalCells() {
-      return this.gridSize.x * this.gridSize.y * this.gridSize.z;
-    }
-  },
   mounted() {
-    this.initThreeJS();
-    this.createOptimizedGrid();
-    this.animate();
-    window.addEventListener('resize', this.handleResize);
+    this.ctx = this.$refs.canvas.getContext('2d');
+    this.resizeCanvas();
+    this.generateWarehouseData();
+    this.createMiniMap();
+    this.zoomToFit();
+    window.addEventListener('resize', this.resizeCanvas);
+
+    const canvas = this.$refs.canvas;
+    canvas.addEventListener('mousedown', this.onMouseDown);
+    canvas.addEventListener('mousemove', this.onMouseMove);
+    canvas.addEventListener('mouseup', this.onMouseUp);
+    canvas.addEventListener('mouseleave', this.onMouseUp);
+    canvas.addEventListener('wheel', this.onWheel, { passive: false });
   },
   beforeDestroy() {
-    this.cleanup();
+    const canvas = this.$refs.canvas;
+    window.removeEventListener('resize', this.resizeCanvas);
+
+    canvas.removeEventListener('mousedown', this.onMouseDown);
+    canvas.removeEventListener('mousemove', this.onMouseMove);
+    canvas.removeEventListener('mouseup', this.onMouseUp);
+    canvas.removeEventListener('mouseleave', this.onMouseUp);
+    canvas.removeEventListener('wheel', this.onWheel);
   },
   methods: {
-    initThreeJS() {
-      // Scene
-      this.scene = new THREE.Scene();
-      this.scene.background = new THREE.Color(0xf0f0f0);
-
-      // Camera
-      const container = this.$refs.container;
-      const width = container.clientWidth;
-      const height = container.clientHeight;
-      
-      this.camera = new THREE.PerspectiveCamera(60, width / height, 1, 100000);
-      this.camera.position.set(500, 500, 500);
-      this.camera.lookAt(0, 0, 0);
-
-      // Renderer
-      this.renderer = new THREE.WebGLRenderer({
-        antialias: false,
-        logarithmicDepthBuffer: false,
-      })
-      
-      this.renderer.shadowMap.enabled = false;
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      this.renderer.setSize(width, height);
-      container.appendChild(this.renderer.domElement);
-
-      // Controls
-      this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-      this.controls.enableDamping = true;
-      this.controls.dampingFactor = 0.05;
-
-      // Lighting
-      const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
-      this.scene.add(ambientLight);
-
-      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-      directionalLight.position.set(1, 1, 1).normalize();
-      this.scene.add(directionalLight);
-
-      this.stats = new Stats();
-      this.stats.showPanel(0); // 0: FPS, 1: MS, 2: MB
-      document.body.appendChild(this.stats.dom);
-
+    resizeCanvas() {
+      const canvas = this.$refs.canvas;
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      this.zoomToFit();
     },
-    
-    createGeometries() {
-      return {
-        high: new THREE.BoxGeometry(this.cellSize - 4, this.cellSize - 4, this.cellSize - 4, 8, 8, 8),
-        medium: new THREE.BoxGeometry(this.cellSize - 4, this.cellSize - 4, this.cellSize - 4, 3, 3, 3),
-        low: new THREE.BoxGeometry(this.cellSize - 4, this.cellSize - 4, this.cellSize - 4, 1, 1, 1)
-      };
+    generateWarehouseData() {
+      this.layout.forEach(p => {
+        const key = `${p.xpos},${p.ypos}`;
+        this.layoutCells.add(key);
+      });
+
+      this.path.forEach(pathLine => {
+        pathLine.forEach(([x, y]) => {
+          this.pathCells.add(`${x},${y}`);
+        });
+      });
+
+      this.listItem.forEach(item => {
+        const key = `${item.xpos},${item.ypos}`;
+        this.itemCells.set(key, item);
+      });
     },
-    
-    createOptimizedGrid() {
-      const geometries = this.createGeometries();
-      const material = new THREE.MeshPhongMaterial({
-        color: 0x3498db,
-        transparent: true,
-        opacity: 0.8,
-        shininess: 30
-      });
-           const materialMedium = new THREE.MeshPhongMaterial({
-        color: 0xaa98db,
-        transparent: true,
-        opacity: 0.8,
-        shininess: 30
-      });
-           const materialLow = new THREE.MeshPhongMaterial({
-        color: 0xff98db,
-        transparent: true,
-        opacity: 0.8,
-        shininess: 30
-      });
+    createMiniMap() {
+      const offscreen = document.createElement('canvas');
+      offscreen.width = this.warehouseX;
+      offscreen.height = this.warehouseY;
+      const ctx = offscreen.getContext('2d');
 
-      // Tạo InstancedMesh cho từng mức LOD
-      this.instances = {
-        high: new THREE.InstancedMesh(geometries.high, material, this.totalCells),
-        medium: new THREE.InstancedMesh(geometries.medium, materialMedium, this.totalCells),
-        low: new THREE.InstancedMesh(geometries.low, materialLow, this.totalCells)
-      };
+      for (let x = 0; x < this.warehouseX; x++) {
+        for (let y = 0; y < this.warehouseY; y++) {
+          const key = `${x},${y}`;
+          if (this.layoutCells.has(key)) {
+            ctx.fillStyle = 'orange';
+          } else if (this.pathCells.has(key)) {
+            ctx.fillStyle = 'lightgreen';
+          } else {
+            ctx.fillStyle = '#f0f0f0';
+          }
+          ctx.fillRect(x, this.warehouseY - y - 1, 1, 1);
+        }
+      }
 
-      // Cấu hình ban đầu
-      Object.values(this.instances).forEach(instance => {
-        instance.visible = false;
-        instance.count = this.totalCells;
-        instance.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-        this.scene.add(instance);
-      });
-
-      // Thiết lập vị trí cho tất cả instances
-      this.setupInstancePositions();
-      
-      // Bật LOD mặc định
-      this.instances.low.visible = true;
-      this.currentLOD = 'low';
+      this.miniMapImage = new Image();
+      this.miniMapImage.src = offscreen.toDataURL();
     },
-    
-    setupInstancePositions() {
-      const dummy = new THREE.Object3D();
-      const halfX = (this.gridSize.x * this.cellSize) / 2;
-      const halfY = (this.gridSize.y * this.cellSize) / 2;
-      
-      let index = 0;
-      for (let x = 0; x < this.gridSize.x; x++) {
-        for (let y = 0; y < this.gridSize.y; y++) {
-          for (let z = 0; z < this.gridSize.z; z++) {
-            dummy.position.set(
-              x * this.cellSize - halfX,
-              z * this.cellSize,
-              y * this.cellSize - halfY
+    draw() {
+      const canvas = this.$refs.canvas;
+      const ctx = this.ctx;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (this.scale < 0.2) return this.drawTileView();
+
+      ctx.save();
+      ctx.translate(this.offsetX, this.offsetY);
+      ctx.scale(this.scale, this.scale);
+
+      const startCol = Math.floor(-this.offsetX / (this.gridSize * this.scale));
+      const startRow = Math.floor(-this.offsetY / (this.gridSize * this.scale));
+      const visibleCols = Math.ceil(canvas.width / (this.gridSize * this.scale)) + 2;
+      const visibleRows = Math.ceil(canvas.height / (this.gridSize * this.scale)) + 2;
+
+      for (let x = startCol; x < startCol + visibleCols; x++) {
+        for (let y = startRow; y < startRow + visibleRows; y++) {
+          if (x < 0 || y < 0 || x >= this.warehouseX || y >= this.warehouseY) continue;
+
+          const flipY = this.warehouseY - y - 1;
+          const key = `${x},${y}`;
+          if (this.layoutCells.has(key)) {
+            ctx.fillStyle = 'orange';
+            ctx.fillRect(x * this.gridSize, flipY * this.gridSize, this.gridSize, this.gridSize);
+          } else if (this.pathCells.has(key)) {
+            ctx.fillStyle = 'lightgreen';
+            ctx.fillRect(x * this.gridSize, flipY * this.gridSize, this.gridSize, this.gridSize);
+          }
+
+          if (this.itemCells.has(key)) {
+            ctx.fillStyle = 'blue';
+            ctx.beginPath();
+            ctx.arc(
+              x * this.gridSize + this.gridSize / 2,
+              flipY * this.gridSize + this.gridSize / 2,
+              this.gridSize / 4,
+              0,
+              2 * Math.PI
             );
-            dummy.updateMatrix();
-            
-            // Áp dụng cùng vị trí cho tất cả mức LOD
-            this.instances.high.setMatrixAt(index, dummy.matrix);
-            this.instances.medium.setMatrixAt(index, dummy.matrix);
-            this.instances.low.setMatrixAt(index, dummy.matrix);
-            index++;
+            ctx.fill();
+          }
+
+          if (this.scale > 0.3) {
+            ctx.strokeStyle = '#ccc';
+            ctx.strokeRect(x * this.gridSize, flipY * this.gridSize, this.gridSize, this.gridSize);
           }
         }
       }
-      
-      // Cập nhật buffer
-      this.instances.high.instanceMatrix.needsUpdate = true;
-      this.instances.medium.instanceMatrix.needsUpdate = true;
-      this.instances.low.instanceMatrix.needsUpdate = true;
+
+      ctx.restore();
     },
-    
-    updateLOD() {
-      const distance = this.camera.position.distanceTo(new THREE.Vector3(0, 0, 0));
-      let newLOD = 'low';
-      
-      if (distance < 300) {
-        newLOD = 'high';
-      } else if (distance < 600) {
-        newLOD = 'medium';
-      }
-      
-      if (newLOD !== this.currentLOD) {
-        this.instances[this.currentLOD].visible = false;
-        this.instances[newLOD].visible = true;
-        this.currentLOD = newLOD;
+    drawTileView() {
+      if (!this.miniMapImage) return;
+
+      const ctx = this.ctx;
+      const img = this.miniMapImage;
+
+      const scaledWidth = img.width * this.gridSize * this.scale;
+      const scaledHeight = img.height * this.gridSize * this.scale;
+
+      ctx.save();
+      ctx.translate(this.offsetX, this.offsetY);
+      ctx.drawImage(img, 0, 0, scaledWidth, scaledHeight);
+      ctx.restore();
+    },
+    onMouseDown(e) {
+      this.isDragging = true;
+      this.startX = e.clientX - this.offsetX;
+      this.startY = e.clientY - this.offsetY;
+    },
+    onMouseMove(e) {
+      if (this.isDragging) {
+        this.offsetX = e.clientX - this.startX;
+        this.offsetY = e.clientY - this.startY;
+        this.draw();
       }
     },
-    
-    animate() {
-       this.stats.begin();
-      this.frameId = requestAnimationFrame(this.animate);
-      this.updateLOD();
-      this.controls.update();
-      this.renderer.render(this.scene, this.camera);
-       this.stats.end();
+    onMouseUp() {
+      this.isDragging = false;
     },
-    
-    handleResize() {
-      const container = this.$refs.container;
-      const width = container.clientWidth;
-      const height = container.clientHeight;
-      
-      this.camera.aspect = width / height;
-      this.camera.updateProjectionMatrix();
-      this.renderer.setSize(width, height);
+    onWheel(e) {
+      e.preventDefault();
+      const scaleAmount = 0.1;
+      const mouseX = e.clientX;
+      const mouseY = e.clientY;
+
+      const prevScale = this.scale;
+      if (e.deltaY < 0) this.scale *= (1 + scaleAmount);
+      else this.scale *= (1 - scaleAmount);
+
+      this.offsetX -= (mouseX - this.offsetX) * (this.scale / prevScale - 1);
+      this.offsetY -= (mouseY - this.offsetY) * (this.scale / prevScale - 1);
+
+      this.draw();
     },
-    
-    cleanup() {
-      window.removeEventListener('resize', this.handleResize);
-      cancelAnimationFrame(this.frameId);
-      
-      // Dọn dẹp tài nguyên
-      if (this.renderer) {
-        this.renderer.dispose();
-        this.renderer.forceContextLoss();
-        this.renderer.domElement = null;
-      }
-      
-      // Hủy các instances
-      Object.values(this.instances).forEach(instance => {
-        instance.geometry.dispose();
-        instance.material.dispose();
-        this.scene.remove(instance);
-      });
-      
-      if (this.$refs.container && this.renderer?.domElement) {
-        this.$refs.container.removeChild(this.renderer.domElement);
-      }
+    zoomToFit() {
+      const canvas = this.$refs.canvas;
+      const scaleX = canvas.width / (this.gridSize * this.warehouseX);
+      const scaleY = canvas.height / (this.gridSize * this.warehouseY);
+      this.scale = Math.min(scaleX, scaleY);
+
+      const worldWidth = this.gridSize * this.warehouseX * this.scale;
+      const worldHeight = this.gridSize * this.warehouseY * this.scale;
+
+      this.offsetX = (canvas.width - worldWidth) / 2;
+      this.offsetY = (canvas.height - worldHeight) / 2;
+
+      this.draw();
+    },
+    zoomMax() {
+      this.scale = 1;
+      const canvas = this.$refs.canvas;
+      const worldWidth = this.gridSize * this.warehouseX;
+      const worldHeight = this.gridSize * this.warehouseY;
+
+      this.offsetX = (canvas.width - worldWidth) / 2;
+      this.offsetY = (canvas.height - worldHeight) / 2;
+      this.draw();
     }
   }
 };
 </script>
 
 <style scoped>
-.grid-container {
-  width: 100%;
+canvas {
+  display: block;
+  width: 100vw;
   height: 100vh;
-  overflow: hidden;
-  position: relative;
+  background: #f9f9f9;
+  cursor: grab;
+}
+canvas:active {
+  cursor: grabbing;
 }
 </style>
