@@ -11,11 +11,12 @@
     <demo-two v-else-if="demo == '2'"></demo-two>
     <demo-three
       v-else-if="demo == '3'"
-      :layout="layoutData"
-      :path="pathData"
+      :layoutData="layoutData"
+      :pathData="pathData"
       :listItem="itemList"
-      :warehouseX="100"
-      :warehouseY="50"
+      :warehouseX="1000"
+      :warehouseY="1000"
+      :visits="visitsData"
     />
   </div>
 </template>
@@ -76,17 +77,22 @@ export default {
             "aisle": "R4",
             "len": 50,
             "width": 50,
-            "xpos": 40,
-            "ypos": 25
+            "x": 40,
+            "y": 25
         },
         {
             "aisle": "P",
             "len": 50,
             "width": 50,
-            "xpos": 41,
-            "ypos": 26
+            "x": 41,
+            "y": 26
         }
-    ]
+    ],
+    visitsData: [
+        [25,13],
+        [2,35],
+        [25,13]
+      ]
     }
   },
   watch(){
